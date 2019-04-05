@@ -1,2 +1,2 @@
 # tap-fp-challenge
-A solution to the Functional Scala Concurrency Challenge by John A De Goes
+A solution to the [Functional Scala Concurrency Challenge](http://degoes.net/articles/zio-challenge) by John A De Goes.
