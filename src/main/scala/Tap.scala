@@ -1,37 +1,58 @@
-import cats.effect.IO
-import cats.effect.concurrent.Ref
-import cats.implicits._
+import scalaz.zio.{IO, Ref, UIO, ZIO}
 
-trait Tap {
-  def apply[A](effect: IO[A]): IO[A]
+/**
+  * A `Tap` adjusts the flow of tasks through
+  * an external service in response to observed
+  * failures in the service, always trying to
+  * maximize flow while attempting to meet the
+  * user-defined upper bound on failures.
+  */
+trait Tap[-E1, +E2] {
+
+  /**
+    * Sends the task through the tap. The
+    * returned task may fail immediately with a
+    * default error depending on the service
+    * being guarded by the tap.
+    */
+  def apply[R, E >: E2 <: E1, A](effect: ZIO[R, E, A]): ZIO[R, E, A]
 }
 
 object Tap {
   type Percentage = Double
 
-  def make(
+  /**
+    * Creates a tap that aims for the specified
+    * maximum error rate, using the specified
+    * function to qualify errors (unqualified
+    * errors are not treated as failures for
+    * purposes of the tap), and the specified
+    * default error used for rejecting tasks
+    * submitted to the tap.
+    */
+  def make[E1, E2](
       errBound: Percentage,
-      qualified: Throwable => Boolean,
-      rejected: => Throwable
-  ): IO[Tap] =
+      qualified: E1 => Boolean,
+      rejected: => E2
+  ): UIO[Tap[E1, E2]] =
     for {
-      ref <- Ref.of[IO, TapState](TapState(0, 0))
+      ref <- Ref.make(TapState(0, 0))
     } yield
-      new Tap {
-        def apply[A](effect: IO[A]): IO[A] = {
+      new Tap[E1, E2] {
+        def apply[R, E >: E2 <: E1, A](effect: ZIO[R, E, A]): ZIO[R, E, A] = {
 
-          def bind[A](a: A): IO[A] =
-            ref.update(_.update(false)) *> IO.pure(a)
+          def failure(e: E): IO[E, Nothing] =
+            ref.update(_.update(qualified(e))) *> ZIO.fail(e)
 
-          def recover[A](e: Throwable): IO[A] =
-            ref.update(_.update(qualified(e))) *> IO.raiseError(e)
+          def success(a: A): UIO[A] =
+            ref.update(_.update(false)) *> ZIO.succeed(a)
 
           for {
             state <- ref.get
             a <- if (state.errorRate <= errBound)
-              effect.redeemWith(recover, bind)
+              effect.foldM(failure, success)
             else
-              ref.update(_.update(false)) *> IO.raiseError(rejected)
+              ref.update(_.update(false)) *> ZIO.fail(rejected)
           } yield a
         }
       }
